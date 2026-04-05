@@ -132,9 +132,19 @@ void TCascFile::InitFileSpans(PCASC_FILE_SPAN pSpans, DWORD dwSpanCount)
     // Add all span sizes
     for(DWORD i = 0; i < dwSpanCount; i++, pSpans++)
     {
-        // Put the archive index and archive offset
-        pSpans->ArchiveIndex = (DWORD)(pCKeyEntry[i].StorageOffset >> FileOffsetBits);
-        pSpans->ArchiveOffs = (DWORD)(pCKeyEntry[i].StorageOffset & FileOffsetMask);
+        // Internal manifests like ENCODING/ROOT may have no local storage
+        // offset even though they are still readable via alternate paths.
+        // Do not derive a fake archive index from CASC_INVALID_SIZE.
+        if(pCKeyEntry[i].StorageOffset != CASC_INVALID_OFFS64)
+        {
+            pSpans->ArchiveIndex = (DWORD)(pCKeyEntry[i].StorageOffset >> FileOffsetBits);
+            pSpans->ArchiveOffs = (DWORD)(pCKeyEntry[i].StorageOffset & FileOffsetMask);
+        }
+        else
+        {
+            pSpans->ArchiveIndex = 0;
+            pSpans->ArchiveOffs = 0;
+        }
 
         // Add to the total encoded size
         if(ContentSize != CASC_INVALID_SIZE64)
@@ -200,7 +210,7 @@ bool OpenFileByCKeyEntry(TCascStorage * hs, PCASC_CKEY_ENTRY pCKeyEntry, DWORD d
         if((hf = new TCascFile(hs, pCKeyEntry)) != NULL)
         {
             hf->bVerifyIntegrity   = (dwOpenFlags & CASC_STRICT_DATA_CHECK)  ? true : false;
-            hf->bDownloadFileIf    = (hs->dwFeatures & CASC_FEATURE_ONLINE)  ? true : false;
+            hf->bDownloadFileIf    = (hs->dwFeatures & (CASC_FEATURE_ONLINE | CASC_FEATURE_ALLOW_DOWNLOAD)) ? true : false;
             hf->bOvercomeEncrypted = (dwOpenFlags & CASC_OVERCOME_ENCRYPTED) ? true : false;
             dwErrCode = ERROR_SUCCESS;
         }

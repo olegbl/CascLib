@@ -34,9 +34,12 @@ static DWORD OpenDataStream(TCascFile * hf, PCASC_FILE_SPAN pFileSpan, PCASC_CKE
 
     // If the file is available locally, we rely on data files.
     // If not, we download the file and open the stream
-    if(pCKeyEntry->Flags & CASC_CE_FILE_IS_LOCAL)
+    if((pCKeyEntry->Flags & CASC_CE_FILE_IS_LOCAL) && pCKeyEntry->StorageOffset != CASC_INVALID_OFFS64)
     {
         DWORD dwArchiveIndex = pFileSpan->ArchiveIndex;
+        bool bOpenedLocal = false;
+        ULONGLONG LocalSize = 0;
+        ULONGLONG RequiredEnd = 0;
 
         // Lock the storage to make the operation thread-safe
         CascLock(hs->StorageLock);
@@ -59,61 +62,79 @@ static DWORD OpenDataStream(TCascFile * hf, PCASC_FILE_SPAN pFileSpan, PCASC_CKE
         // Unlock the storage
         CascUnlock(hs->StorageLock);
 
-        // Return error or success
+        // Return success only if the local archive really contains the
+        // requested range. Some D2R 3.1.2+ .index entries appear to point
+        // past the locally present data.### files even though the file itself
+        // is still downloadable from CDN.
         pFileSpan->pStream = hs->DataFiles[dwArchiveIndex];
-        return (pFileSpan->pStream != NULL) ? ERROR_SUCCESS : ERROR_FILE_NOT_FOUND;
-    }
-    else
-    {
-        if(bDownloadFileIf)
+        bOpenedLocal = (pFileSpan->pStream != NULL);
+        if(bOpenedLocal)
         {
-            CASC_ARCHIVE_INFO ArchiveInfo = {0};
-            CASC_PATH<TCHAR> LocalPath;
-            CPATH_TYPE PathType = (pCKeyEntry->Flags & CASC_CE_FILE_PATCH) ? PathTypePatch : PathTypeData;
+            if(pCKeyEntry->EncodedSize == CASC_INVALID_SIZE)
+                return ERROR_SUCCESS;
 
-            // Fetch the file
-            dwErrCode = FetchCascFile(hs, PathType, pCKeyEntry->EKey, NULL, LocalPath, &ArchiveInfo);
-            if(dwErrCode == ERROR_SUCCESS)
-            {
-                pStream = FileStream_OpenFile(LocalPath, BASE_PROVIDER_FILE | STREAM_PROVIDER_FLAT);
-                if(pStream != NULL)
-                {
-                    // Initialize information about the position and size of the file in archive
-                    // On loose files, their position is zero and encoded size is length of the file
-                    if(CascIsValidMD5(ArchiveInfo.ArchiveKey))
-                    {
-                        // Archive position
-                        pFileSpan->ArchiveIndex = ArchiveInfo.ArchiveIndex;
-                        pFileSpan->ArchiveOffs = ArchiveInfo.ArchiveOffs;
+            RequiredEnd = (ULONGLONG)pFileSpan->ArchiveOffs + (ULONGLONG)pCKeyEntry->EncodedSize;
+            if(FileStream_GetSize(pFileSpan->pStream, &LocalSize) && RequiredEnd <= LocalSize)
+                return ERROR_SUCCESS;
 
-                        // Encoded size
-                        if(pCKeyEntry->EncodedSize == CASC_INVALID_SIZE)
-                            pCKeyEntry->EncodedSize = ArchiveInfo.EncodedSize;
-                        assert(pCKeyEntry->EncodedSize == ArchiveInfo.EncodedSize);
-                    }
-                    else
-                    {
-                        // Archive position
-                        pFileSpan->ArchiveIndex = 0;
-                        pFileSpan->ArchiveOffs = 0;
-
-                        // Encoded size
-                        if(pCKeyEntry->EncodedSize == CASC_INVALID_SIZE)
-                            pCKeyEntry->EncodedSize = GetStreamEncodedSize(pStream);
-                        assert(pCKeyEntry->EncodedSize == GetStreamEncodedSize(pStream));
-                    }
-
-                    // We need to close the file stream after we're done
-                    pFileSpan->pStream = pStream;
-                    hf->bCloseFileStream = true;
-                    return ERROR_SUCCESS;
-                }
-            }
-            return dwErrCode;
+            pFileSpan->pStream = NULL;
+            bOpenedLocal = false;
         }
-
-        return ERROR_FILE_OFFLINE;
+        if(bOpenedLocal)
+            return ERROR_SUCCESS;
     }
+
+    if(bDownloadFileIf)
+    {
+        CASC_ARCHIVE_INFO ArchiveInfo = {0};
+        CASC_PATH<TCHAR> LocalPath;
+        CPATH_TYPE PathType = (pCKeyEntry->Flags & CASC_CE_FILE_PATCH) ? PathTypePatch : PathTypeData;
+
+        // Fetch the file. This is also used as a fallback for entries
+        // incorrectly classified as local by the modern archive-style .index
+        // metadata used by Diablo II: Resurrected.
+        dwErrCode = FetchCascFile(hs, PathType, pCKeyEntry->EKey, NULL, LocalPath, &ArchiveInfo);
+        if(dwErrCode == ERROR_SUCCESS)
+        {
+            pStream = FileStream_OpenFile(LocalPath, STREAM_FLAG_READ_ONLY | STREAM_FLAG_WRITE_SHARE | STREAM_PROVIDER_FLAT | BASE_PROVIDER_FILE);
+            if(pStream != NULL)
+            {
+                // Initialize information about the position and size of the file in archive
+                // On loose files, their position is zero and encoded size is length of the file
+                if(CascIsValidMD5(ArchiveInfo.ArchiveKey))
+                {
+                    // Archive position
+                    pFileSpan->ArchiveIndex = ArchiveInfo.ArchiveIndex;
+                    pFileSpan->ArchiveOffs = ArchiveInfo.ArchiveOffs;
+
+                    // Encoded size
+                    if(pCKeyEntry->EncodedSize == CASC_INVALID_SIZE)
+                        pCKeyEntry->EncodedSize = ArchiveInfo.EncodedSize;
+                    assert(pCKeyEntry->EncodedSize == ArchiveInfo.EncodedSize);
+                }
+                else
+                {
+                    // Archive position
+                    pFileSpan->ArchiveIndex = 0;
+                    pFileSpan->ArchiveOffs = 0;
+
+                    // Encoded size
+                    if(pCKeyEntry->EncodedSize == CASC_INVALID_SIZE)
+                        pCKeyEntry->EncodedSize = GetStreamEncodedSize(pStream);
+                    assert(pCKeyEntry->EncodedSize == GetStreamEncodedSize(pStream));
+                }
+
+                // We need to close the file stream after we're done
+                pFileSpan->pStream = pStream;
+                hf->bCloseFileStream = true;
+                return ERROR_SUCCESS;
+            }
+            dwErrCode = GetCascError();
+        }
+        return dwErrCode;
+    }
+
+    return ERROR_FILE_OFFLINE;
 }
 
 #ifdef CASCLIB_DEBUG

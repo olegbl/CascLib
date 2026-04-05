@@ -1307,10 +1307,11 @@ DWORD FetchCascFile(
     LocalPath.AppendString(szExtension, false);
 
     // Check whether the file already exists
-    if(!FileAlreadyExists(LocalPath))
+    if(_taccess(LocalPath, 0) != 0)
     {
-        // If this is not an online version, do nothing and return error
-        if(!(hs->dwFeatures & CASC_FEATURE_ONLINE))
+        // Local storages may also opt into fetching missing CASC metadata/data
+        // when ALLOW_DOWNLOAD is enabled.
+        if(!(hs->dwFeatures & (CASC_FEATURE_ONLINE | CASC_FEATURE_ALLOW_DOWNLOAD)))
             return ERROR_FILE_NOT_FOUND;
 
         // Force-create the local path
@@ -1358,7 +1359,6 @@ DWORD FetchCascFile(TCascStorage * hs, CPATH_TYPE PathType, LPBYTE pbEKey, LPCTS
             pArchiveInfo->ArchiveIndex = (DWORD)(pEKeyEntry->StorageOffset >> hs->FileOffsetBits);
             pArchiveInfo->ArchiveOffs = (DWORD)(pEKeyEntry->StorageOffset & ((ValueOne64 << hs->FileOffsetBits) - 1));
             pArchiveInfo->EncodedSize = pEKeyEntry->EncodedSize;
-
             // Fill-in the archive key
             pbArchiveKey = pbEKey = hs->ArchivesKey.pbData + (MD5_HASH_SIZE * pArchiveInfo->ArchiveIndex);
             memcpy(pArchiveInfo->ArchiveKey, pbArchiveKey, MD5_HASH_SIZE);
@@ -1518,18 +1518,26 @@ DWORD CheckCascBuildFileExact(CASC_BUILD_FILE & BuildFile, LPCTSTR szLocalPath)
     // Check every type of the build file
     for(size_t i = 0; i < _countof(BuildTypes); i++)
     {
+        if(nLength < BuildTypes[i].nLength)
+            continue;
+
         // We support any file name with the appropriate ending,
         // for example wow-19342.build.info or wow-47186.versions
         szFileType = szLocalPath + nLength - BuildTypes[i].nLength;
         if(!_tcsicmp(BuildTypes[i].szFileName, szFileType))
         {
-            // We also try to open the file
-            if((pStream = FileStream_OpenFile(szLocalPath, 0)) != NULL)
+            // We only need to know whether the build file exists. Opening
+            // the root-level .build.info can fail with ACCESS_DENIED on some
+            // environments even though the file is present and readable later.
+            pStream = NULL;
+            bool bFileExists = (_taccess(szLocalPath, 0) == 0);
+            if(bFileExists || (pStream = FileStream_OpenFile(szLocalPath, 0)) != NULL)
             {
                 CascStrCopy(BuildFile.szFullPath, _countof(BuildFile.szFullPath), szLocalPath);
                 BuildFile.szPlainName = GetPlainFileName(BuildFile.szFullPath);
                 BuildFile.BuildFileType = BuildTypes[i].BuildFileType;
-                FileStream_Close(pStream);
+                if(pStream != NULL)
+                    FileStream_Close(pStream);
                 return ERROR_SUCCESS;
             }
         }
@@ -1766,7 +1774,6 @@ DWORD LoadInternalFileToMemory(TCascStorage * hs, PCASC_CKEY_ENTRY pCKeyEntry, C
         {
             cbFileData = pCKeyEntry->ContentSize;
         }
-
         // Load the entire file to memory
         if(dwErrCode == ERROR_SUCCESS)
         {

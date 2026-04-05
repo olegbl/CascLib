@@ -650,6 +650,7 @@ static DWORD VerifyIndexSize(CASC_ARCINDEX_FOOTER  & InFooter, LPBYTE pbIndexFil
 static DWORD LoadArchiveIndexPage(TCascStorage * hs, CASC_ARCINDEX_FOOTER & InFooter, LPBYTE pbIndexPage, LPBYTE pbIndexPageEnd, size_t nArchive)
 {
     CASC_EKEY_ENTRY EKeyEntry;
+    ULONGLONG ArchiveOffsetMask = ((((ULONGLONG)1) << (InFooter.OffsetBytes * 8)) - 1);
     DWORD dwErrCode;
 
     while (pbIndexPage <= pbIndexPageEnd)
@@ -658,6 +659,15 @@ static DWORD LoadArchiveIndexPage(TCascStorage * hs, CASC_ARCINDEX_FOOTER & InFo
         dwErrCode = CaptureIndexEntry(InFooter, EKeyEntry, pbIndexPage, pbIndexPageEnd, nArchive);
         if(dwErrCode != ERROR_SUCCESS)
             break;
+
+        // Local storages can already have FileOffsetBits fixed by legacy .idx files.
+        // Normalize archive-index entries to that bit width so later decoding yields
+        // the correct archive ordinal instead of a bogus remapped value.
+        if(hs->FileOffsetBits != 0 && hs->FileOffsetBits != (DWORD)(InFooter.OffsetBytes * 8))
+        {
+            ULONGLONG ArchiveOffset = (EKeyEntry.StorageOffset & ArchiveOffsetMask);
+            EKeyEntry.StorageOffset = (((ULONGLONG)nArchive) << hs->FileOffsetBits) | ArchiveOffset;
+        }
 
         // Insert a new entry to the index array
         if((hs->IndexArray.Insert(&EKeyEntry, 1)) == NULL)
@@ -731,6 +741,50 @@ static DWORD BuildMapOfArchiveIndices(TCascStorage * hs)
     return dwErrCode;
 }
 
+static DWORD LoadLocalArchiveIndexFiles(TCascStorage * hs)
+{
+    CASC_BLOB FileData;
+    size_t nArchiveCount = (hs->ArchivesKey.cbData / MD5_HASH_SIZE);
+    DWORD dwErrCode = ERROR_SUCCESS;
+
+    if(hs->ArchivesKey.pbData == NULL || hs->ArchivesKey.cbData == 0)
+        return ERROR_SUCCESS;
+
+    dwErrCode = hs->IndexArray.Create(sizeof(CASC_EKEY_ENTRY), 0x10000);
+    if(dwErrCode != ERROR_SUCCESS)
+        return dwErrCode;
+
+    for(size_t i = 0; i < nArchiveCount; i++)
+    {
+        CASC_PATH<TCHAR> LocalPath;
+        TCHAR szArchiveKey[MD5_STRING_SIZE + 1] = {0};
+        TCHAR szArchiveName[MD5_STRING_SIZE + 8] = {0};
+        LPBYTE pbIndexHash = hs->ArchivesKey.pbData + (i * MD5_HASH_SIZE);
+
+        StringFromBinary(pbIndexHash, MD5_HASH_SIZE, szArchiveKey);
+        CascStrPrintf(szArchiveName, _countof(szArchiveName), _T("%s.index"), szArchiveKey);
+        LocalPath.Create(hs->szRootPath, _T("data"), _T("indices"), szArchiveName, NULL);
+
+        dwErrCode = LoadFileToMemory(LocalPath, FileData);
+        if(dwErrCode == ERROR_FILE_NOT_FOUND)
+        {
+            dwErrCode = ERROR_SUCCESS;
+            continue;
+        }
+        if(dwErrCode != ERROR_SUCCESS)
+            break;
+
+        dwErrCode = LoadArchiveIndexFile(hs, FileData.pbData, FileData.cbData, i);
+        FileData.Free();
+        if(dwErrCode != ERROR_SUCCESS)
+            break;
+    }
+
+    if(dwErrCode == ERROR_SUCCESS && hs->IndexArray.ItemCount() != 0)
+        dwErrCode = BuildMapOfArchiveIndices(hs);
+    return dwErrCode;
+}
+
 static DWORD LoadArchiveIndexFiles(TCascStorage * hs)
 {
     CASC_BLOB FileData;
@@ -794,6 +848,7 @@ bool CopyEKeyEntry(TCascStorage * hs, PCASC_CKEY_ENTRY pCKeyEntry)
 
         pCKeyEntry->StorageOffset = ConvertBytesToInteger_5(pbEKeyEntry + hs->EKeyLength);
         pCKeyEntry->EncodedSize = ConvertBytesToInteger_4_LE(pbEKeyEntry + hs->EKeyLength + 5);
+
         pCKeyEntry->Flags |= CASC_CE_FILE_IS_LOCAL;
     }
 
@@ -806,7 +861,12 @@ DWORD LoadIndexFiles(TCascStorage * hs)
     {
         case CascBuildDb:       // Load the index files from the disk
         case CascBuildInfo:
-            return LoadLocalIndexFiles(hs);
+        {
+            DWORD dwErrCode = LoadLocalIndexFiles(hs);
+            if(dwErrCode == ERROR_SUCCESS)
+                dwErrCode = LoadLocalArchiveIndexFiles(hs);
+            return dwErrCode;
+        }
 
         case CascVersions:      // Load the index files from the cache / internet
             return LoadArchiveIndexFiles(hs);
