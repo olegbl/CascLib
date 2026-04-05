@@ -1181,14 +1181,16 @@ static DWORD LoadCascStorage(TCascStorage * hs, PCASC_OPEN_STORAGE_ARGS pArgs, L
         // For local (game) storages, we need the data and indices subdirectory
         if(hs->dwFeatures & CASC_FEATURE_DATA_ARCHIVES)
         {
-            if(CheckArchiveFilesDirectories(hs) != ERROR_SUCCESS)
+            DWORD dwArchiveDirs = CheckArchiveFilesDirectories(hs);
+            if(dwArchiveDirs != ERROR_SUCCESS)
                 hs->dwFeatures &= ~CASC_FEATURE_DATA_ARCHIVES;
         }
 
         // For data files storage, we need that folder
         if(hs->dwFeatures & CASC_FEATURE_DATA_FILES)
         {
-            if(CheckDataFilesDirectory(hs) != ERROR_SUCCESS)
+            DWORD dwDataFiles = CheckDataFilesDirectory(hs);
+            if(dwDataFiles != ERROR_SUCCESS)
                 hs->dwFeatures &= ~CASC_FEATURE_DATA_FILES;
         }
 
@@ -1448,23 +1450,28 @@ bool WINAPI CascOpenStorageEx(LPCTSTR szParams, PCASC_OPEN_STORAGE_ARGS pArgs, b
         {
             CASC_BUILD_FILE BuildFile = {NULL};
             DWORD dwFeatures = (pArgs->dwFlags & CASC_FEATURE_ALLOW_DOWNLOAD);
+            DWORD dwCheckExact = CheckCascBuildFileExact(BuildFile, pArgs->szLocalPath);
 
             // Check for one of the supported main files (.build.info, .build.db, versions)
-            if((dwErrCode = CheckCascBuildFileExact(BuildFile, pArgs->szLocalPath)) == ERROR_SUCCESS)
+            if((dwErrCode = dwCheckExact) == ERROR_SUCCESS)
             {
                 dwErrCode = LoadCascStorage(hs, pArgs, BuildFile.szFullPath, BuildFile.BuildFileType, dwFeatures | CASC_FEATURE_DATA_ARCHIVES | CASC_FEATURE_DATA_FILES);
             }
 
             // Search the folder and upper folders for the build file
-            else if((dwErrCode = CheckCascBuildFileDirs(BuildFile, pArgs->szLocalPath)) == ERROR_SUCCESS)
+            else
             {
-                dwErrCode = LoadCascStorage(hs, pArgs, BuildFile.szFullPath, BuildFile.BuildFileType, dwFeatures | CASC_FEATURE_DATA_ARCHIVES | CASC_FEATURE_DATA_FILES);
-            }
+                DWORD dwCheckDirs = CheckCascBuildFileDirs(BuildFile, pArgs->szLocalPath);
+                if((dwErrCode = dwCheckDirs) == ERROR_SUCCESS)
+                {
+                    dwErrCode = LoadCascStorage(hs, pArgs, BuildFile.szFullPath, BuildFile.BuildFileType, dwFeatures | CASC_FEATURE_DATA_ARCHIVES | CASC_FEATURE_DATA_FILES);
+                }
 
-            // If the caller requested an online storage, we must have the code name
-            else if((dwErrCode = CheckOnlineStorage(pArgs, BuildFile, bOnlineStorage)) == ERROR_SUCCESS)
-            {
-                dwErrCode = LoadCascStorage(hs, pArgs, BuildFile.szFullPath, BuildFile.BuildFileType, dwFeatures | CASC_FEATURE_DATA_FILES);
+                // If the caller requested an online storage, we must have the code name
+                else if((dwErrCode = CheckOnlineStorage(pArgs, BuildFile, bOnlineStorage)) == ERROR_SUCCESS)
+                {
+                    dwErrCode = LoadCascStorage(hs, pArgs, BuildFile.szFullPath, BuildFile.BuildFileType, dwFeatures | CASC_FEATURE_DATA_FILES);
+                }
             }
         }
     }
