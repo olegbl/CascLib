@@ -1529,6 +1529,7 @@ DWORD CheckCascBuildFileExact(CASC_BUILD_FILE & BuildFile, LPCTSTR szLocalPath)
             // We only need to know whether the build file exists. Opening
             // the root-level .build.info can fail with ACCESS_DENIED on some
             // environments even though the file is present and readable later.
+            pStream = NULL;
             bool bFileExists = (_taccess(szLocalPath, 0) == 0);
             if(bFileExists || (pStream = FileStream_OpenFile(szLocalPath, 0)) != NULL)
             {
