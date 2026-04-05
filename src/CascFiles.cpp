@@ -1307,7 +1307,7 @@ DWORD FetchCascFile(
     LocalPath.AppendString(szExtension, false);
 
     // Check whether the file already exists
-    if(GetFileAttributes(LocalPath) == INVALID_FILE_ATTRIBUTES)
+    if(_taccess(LocalPath, 0) != 0)
     {
         // Local storages may also opt into fetching missing CASC metadata/data
         // when ALLOW_DOWNLOAD is enabled.
@@ -1529,8 +1529,8 @@ DWORD CheckCascBuildFileExact(CASC_BUILD_FILE & BuildFile, LPCTSTR szLocalPath)
             // We only need to know whether the build file exists. Opening
             // the root-level .build.info can fail with ACCESS_DENIED on some
             // environments even though the file is present and readable later.
-            DWORD dwAttrs = GetFileAttributes(szLocalPath);
-            if(dwAttrs != INVALID_FILE_ATTRIBUTES || (pStream = FileStream_OpenFile(szLocalPath, 0)) != NULL)
+            bool bFileExists = (_taccess(szLocalPath, 0) == 0);
+            if(bFileExists || (pStream = FileStream_OpenFile(szLocalPath, 0)) != NULL)
             {
                 CascStrCopy(BuildFile.szFullPath, _countof(BuildFile.szFullPath), szLocalPath);
                 BuildFile.szPlainName = GetPlainFileName(BuildFile.szFullPath);
